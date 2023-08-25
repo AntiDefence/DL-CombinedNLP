@@ -1,0 +1,190 @@
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import time
+
+df=pd.read_csv("YOUR CODE LOCATION.CSV")
+
+# Get indices of rows with label 0 and label 1 - if you are experiencing unbalanced data problem. 
+indices_0 = df[df['CostRelated'] == 0].index
+indices_1 = df[df['CostRelated'] == 1].index
+
+# Randomly sample the required number of indices with label 0 #undersampling issue
+random_indices_0 = np.random.choice(indices_0, len(indices_1), replace=False)
+
+# Combine the indices - creating a new dataset
+under_sample_indices = np.concatenate([indices_1, random_indices_0])
+
+# Create the undersampled DataFrame
+under_sampled_df = df.loc[under_sample_indices]
+
+# Shuffle the resulting DataFrame for good measure
+under_sampled_df = under_sampled_df.sample(frac=1).reset_index(drop=True)
+
+df=under_sampled_df
+
+#preprocessing
+import re
+import string
+
+def remove_punct(Text): #punctuationları kaldırmak için bir formül
+  translator=str.maketrans("", "", string.punctuation)
+  return Text.translate(translator)
+
+df["Text"]=df.Text.map(remove_punct)
+
+#remove stopwords - not kelimesini atılmadan algoritma başarısını karşılaştır.
+#pip install ntlk
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+stop=set(stopwords.words("english"))
+
+def remove_stopwords(Text):
+  filtered_words=[word.lower() for word in Text.split() if word.lower() not in stop]
+  return " ".join(filtered_words)
+
+df["Text"]=df.Text.map(remove_stopwords) # bu olay çıkarıyor
+
+#count unique words
+from collections import Counter
+
+def counter_word(text_col):
+  count=Counter()
+  for text in text_col.values:
+    for word in text.split():
+      count[word] += 1
+  return count
+
+counter=counter_word(df.Text)
+
+#counter
+#counter.most_common(5)
+num_unique_words=len(counter)
+
+#split dataset into training and validation set
+train_size=int(df.shape[0]*0.8)
+
+train_df=df[:train_size]
+val_df=df[train_size:]
+
+#split text and labels
+train_sentences=train_df.Text.to_numpy()
+train_labels=train_df.CostRelated.to_numpy()
+val_sentences=val_df.Text.to_numpy()
+val_labels=val_df.CostRelated.to_numpy()
+
+#tokenize
+from tensorflow.keras.preprocessing.text import Tokenizer
+from keras.layers import Dense
+
+tokenizer=Tokenizer(num_words=num_unique_words)
+tokenizer.fit_on_texts(train_sentences) #fit only to training
+
+word_index=tokenizer.word_index
+
+train_sequences=tokenizer.texts_to_sequences(train_sentences) #sentences to sequence-indices
+val_sequences=tokenizer.texts_to_sequences(val_sentences)     #sentences to sequence-indices
+
+#pad the sequences to have the same length - padding
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+#Max number of words in a sequence - be careful and aware of your own dataset
+max_length =30
+
+train_padded=pad_sequences(train_sequences,maxlen=max_length,padding="post",truncating="post")
+val_padded=pad_sequences(val_sequences,maxlen=max_length,padding="post",truncating="post")
+
+#check reversing the indices
+#flip (key, value) - your vocab. has to be same when reversing the indices. you can check.
+reverse_word_index = dict([(idx,word) for (word, idx) in word_index.items()]) #like: 1 - 1: like - as an example.
+
+def decode(sequence):
+  return " ".join([reverse_word_index.get(idx, "?") for idx in sequence])
+
+# Function to create and train a model, then return the history
+def create_train_model(model, model_name):
+    loss = keras.losses.BinaryCrossentropy(from_logits=False)
+    metrics = ["accuracy"]
+    optim = keras.optimizers.Adam(lr=0.001)
+
+    model.compile(loss=loss, optimizer=optim, metrics=metrics)
+    print(f"Training {model_name} model...")
+    history = model.fit(train_padded, train_labels, epochs=10, validation_data=(val_padded, val_labels), verbose=2)
+    return history
+
+# LSTM Model
+model = keras.models.Sequential()
+model.add(layers.Embedding(num_unique_words,32,input_length=max_length))
+model.add(layers.LSTM(64,dropout=0.1))
+model.add(layers.Dense(1,activation="sigmoid"))
+history_LSTM = create_train_model(model, "LSTM")
+
+# Bi-LSTM Model
+model = keras.models.Sequential()
+model.add(layers.Embedding(num_unique_words,32,input_length=max_length))
+model.add(layers.Bidirectional(layers.LSTM(64,dropout=0.1)))
+model.add(layers.Dense(1,activation="sigmoid"))
+history_BiLSTM = create_train_model(model, "Bi-LSTM")
+
+# CNN Model
+model = keras.models.Sequential()
+model.add(layers.Embedding(num_unique_words, 32, input_length=max_length))
+model.add(layers.Conv1D(64, 5, activation='relu'))
+model.add(layers.GlobalMaxPooling1D())
+model.add(layers.Dense(1, activation="sigmoid"))
+history_CNN = create_train_model(model, "CNN")
+
+# SimpleRNN Model
+model = keras.models.Sequential()
+model.add(layers.Embedding(num_unique_words, 32, input_length=max_length))
+model.add(layers.SimpleRNN(64, dropout=0.1))
+model.add(layers.Dense(1, activation="sigmoid"))
+history_RNN = create_train_model(model, "RNN")
+
+# Training Accuracy Plotting
+fig, axs = plt.subplots(2, 2, figsize=(15, 10))  # Creates a 2x2 grid of subplots
+
+# LSTM plot
+axs[0, 0].plot(history_LSTM.history["accuracy"])
+axs[0, 0].plot(history_LSTM.history["val_accuracy"])
+axs[0, 0].set_title('Model accuracy (LSTM)')
+axs[0, 0].set_ylabel('Accuracy')
+axs[0, 0].set_xlabel('Epoch')
+axs[0, 0].legend(['Train', 'Val'], loc='upper left')
+axs[0, 0].set_ylim([0, 1])  # Set the y-axis limits
+
+# Bi-LSTM plot
+axs[0, 1].plot(history_BiLSTM.history["accuracy"])
+axs[0, 1].plot(history_BiLSTM.history["val_accuracy"])
+axs[0, 1].set_title('Model accuracy (Bi-LSTM)')
+axs[0, 1].set_ylabel('Accuracy')
+axs[0, 1].set_xlabel('Epoch')
+axs[0, 1].legend(['Train', 'Val'], loc='upper left')
+axs[0, 1].set_ylim([0, 1])  # Set the y-axis limits
+
+# CNN plot
+axs[1, 0].plot(history_CNN.history["accuracy"])
+axs[1, 0].plot(history_CNN.history["val_accuracy"])
+axs[1, 0].set_title('Model accuracy (CNN)')
+axs[1, 0].set_ylabel('Accuracy')
+axs[1, 0].set_xlabel('Epoch')
+axs[1, 0].legend(['Train', 'Val'], loc='upper left')
+axs[1, 0].set_ylim([0, 1])  # Set the y-axis limits
+
+# RNN plot
+axs[1, 1].plot(history_RNN.history["accuracy"])
+axs[1, 1].plot(history_RNN.history["val_accuracy"])
+axs[1, 1].set_title('Model accuracy (RNN)')
+axs[1, 1].set_ylabel('Accuracy')
+axs[1, 1].set_xlabel('Epoch')
+axs[1, 1].legend(['Train', 'Val'], loc='upper left')
+axs[1, 1].set_ylim([0, 1])  # Set the y-axis limits
+
+# Display the figure with subplots
+plt.tight_layout()
+plt.show()
